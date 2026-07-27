@@ -18,6 +18,6 @@ dependencies {
     implementation("commons-io:commons-io:2.16.1")
 }
 
-tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
-    archiveFileName.set("app.jar")
+tasks.named("bootJar") {
+    archiveFileName = "app.jar"
 }

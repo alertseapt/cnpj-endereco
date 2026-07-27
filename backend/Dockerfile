@@ -1,9 +1,8 @@
 # Multi-stage: compila com Gradle, roda com JRE
 FROM gradle:8.9-jdk21 AS build
 WORKDIR /app
-# copia primeiro o build.gradle + settings para aproveitar cache de dependencias
+# copia primeiro o build.gradle para aproveitar cache de dependencias
 COPY build.gradle ./
-COPY settings.gradle ./ 2>/dev/null || true
 RUN gradle dependencies --no-daemon || true
 COPY . .
 RUN gradle clean bootJar --no-daemon

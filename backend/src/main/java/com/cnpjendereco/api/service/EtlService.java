@@ -84,16 +84,18 @@ public class EtlService {
     private File unzipEstabelecimentoCsv(File zipFile) throws IOException {
         File outDir = new File(dataDir, "unzip");
         outDir.mkdirs();
-        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zipFile.toPath()))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+            while (en.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = en.nextElement();
                 String name = entry.getName().toUpperCase();
                 if (name.contains("ESTABELECIMENTO") && name.endsWith(".CSV")) {
                     File out = new File(outDir, entry.getName());
-                    Files.copy(zis, out.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    try (java.io.InputStream is = zf.getInputStream(entry)) {
+                        Files.copy(is, out.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    }
                     return out;
                 }
-                zis.closeEntry();
             }
         }
         throw new IOException("CSV de estabelecimentos não encontrado no zip " + zipFile.getName());
@@ -105,15 +107,17 @@ public class EtlService {
         downloadIfMissing(zip, BASE_URL + "MUNICIPIOS.zip");
         if (!zip.exists() || zip.length() == 0) return map;
         File csv = null;
-        try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zip.toPath()))) {
-            ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
+        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zip)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+            while (en.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = en.nextElement();
                 if (entry.getName().toUpperCase().contains("MUNICIPIO") && entry.getName().endsWith(".CSV")) {
                     csv = new File(dataDir, "unzip/MUNICIPIOS.csv");
-                    Files.copy(zis, csv.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    try (java.io.InputStream is = zf.getInputStream(entry)) {
+                        Files.copy(is, csv.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    }
                     break;
                 }
-                zis.closeEntry();
             }
         }
         if (csv == null) return map;

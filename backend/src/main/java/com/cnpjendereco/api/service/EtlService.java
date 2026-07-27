@@ -15,14 +15,18 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 /**
  * ETL da Receita Federal (dados abertos, gratuitos).
- * Fonte: https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9
- * Baixa ESTABELECIMENTO_<UF>.zip, descompacta e importa os estabelecimentos.
+ * Layout NOVO: os estabelecimentos vêm em 10 arquivos nacionais
+ * (Estabelecimentos0.zip .. Estabelecimentos9.zip) + Municipios.zip.
+ * Nao ha mais separacao por UF; filtramos pelo campo UF (indice 19).
+ * Fonte (espelho com CDN): dados-abertos-rf-cnpj.casadosdados.com.br
  */
 @Service
 public class EtlService {
@@ -30,10 +34,11 @@ public class EtlService {
     private final EstabelecimentoRepository repository;
     private final String dataDir;
 
-    // Fonte oficial (link compartilhado Nextcloud da Receita Federal).
-    // Retorna 200 via GET com redirect. Prefixo obrigatório: /download/
+    // Espelho Casa dos Dados (mais rápido / estável). Pasta = release mensal.
+    // Atualize a data para a release mais recente quando necessário.
     private static final String BASE_URL =
-        "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9/download/";
+        "https://dados-abertos-rf-cnpj.casadosdados.com.br/arquivos/2026-07-12/";
+    private static final int NUM_PARTS = 10;
 
     public EtlService(EstabelecimentoRepository repository,
                       @Value("${cnpj.data.dir:/data}") String dataDir) {
@@ -44,52 +49,49 @@ public class EtlService {
     @PostConstruct
     void init() {
         new File(dataDir).mkdirs();
+        new File(dataDir, "unzip").mkdirs();
     }
 
     public record EtlResult(long importados, String arquivo, String erro) {}
 
     public EtlResult importarUf(String uf) {
         uf = uf.toUpperCase();
-        String zipName = "ESTABELECIMENTO_" + uf + ".zip";
-        File zipFile = new File(dataDir, zipName);
         try {
-            // 1) Baixar (confirma tamanho > 0 — grounded-action)
-            downloadIfMissing(zipFile, BASE_URL + zipName);
-            if (!zipFile.exists() || zipFile.length() == 0) {
-                return new EtlResult(0, zipName, "download falhou ou arquivo vazio");
-            }
+            // 1) Tabela de MUNICÍPIOS (código IBGE -> nome)
+            Map<String, String> munMap = carregarMunicipios();
 
-            // 2) Descompactar e localizar o .csv de estabelecimentos
-            File csv = unzipEstabelecimentoCsv(zipFile);
-
-            // 2b) Tabela de MUNICÍPIOS (código IBGE -> nome), 1 download nacional pequeno
-            java.util.Map<String, String> munMap = carregarMunicipios();
-
-            // 3) Importar (DELETE + INSERT por UF para reimportação limpa)
+            // 2) Baixar e importar as 10 partes de estabelecimentos (filtra por UF)
             repository.deleteByUf(uf);
-            long count = importCsv(csv, uf, munMap);
-
-            return new EtlResult(count, zipName, null);
+            long total = 0;
+            for (int i = 0; i < NUM_PARTS; i++) {
+                String zipName = "Estabelecimentos" + i + ".zip";
+                File zipFile = new File(dataDir, zipName);
+                downloadIfMissing(zipFile, BASE_URL + zipName);
+                if (!zipFile.exists() || zipFile.length() == 0) continue;
+                File csv = extrairCsv(zipFile, "ESTABELECIMENTO");
+                if (csv == null) continue;
+                total += importCsv(csv, uf, munMap);
+            }
+            return new EtlResult(total, "Estabelecimentos0-9.zip", null);
         } catch (Exception e) {
-            return new EtlResult(0, zipName, e.getMessage());
+            return new EtlResult(0, "Estabelecimentos0-9.zip", e.getMessage());
         }
     }
 
     private void downloadIfMissing(File target, String urlStr) throws IOException {
         if (target.exists() && target.length() > 0) return;
         URL url = new URL(urlStr);
-        FileUtils.copyURLToFile(url, target, 30000, 600000); // timeout 10min
+        FileUtils.copyURLToFile(url, target, 30000, 900000); // timeout 15min
     }
 
-    private File unzipEstabelecimentoCsv(File zipFile) throws IOException {
+    private File extrairCsv(File zipFile, String contains) throws IOException {
         File outDir = new File(dataDir, "unzip");
-        outDir.mkdirs();
-        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zipFile)) {
-            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
+        try (ZipFile zf = new ZipFile(zipFile)) {
+            var en = zf.entries();
             while (en.hasMoreElements()) {
-                java.util.zip.ZipEntry entry = en.nextElement();
+                ZipEntry entry = en.nextElement();
                 String name = entry.getName().toUpperCase();
-                if (name.contains("ESTABELECIMENTO") && name.endsWith(".CSV")) {
+                if (name.contains(contains) && name.endsWith(".CSV")) {
                     File out = new File(outDir, entry.getName());
                     try (java.io.InputStream is = zf.getInputStream(entry)) {
                         Files.copy(is, out.toPath(), StandardCopyOption.REPLACE_EXISTING);
@@ -98,28 +100,15 @@ public class EtlService {
                 }
             }
         }
-        throw new IOException("CSV de estabelecimentos não encontrado no zip " + zipFile.getName());
+        return null;
     }
 
-    private java.util.Map<String, String> carregarMunicipios() throws IOException {
-        java.util.Map<String, String> map = new java.util.HashMap<>();
-        File zip = new File(dataDir, "MUNICIPIOS.zip");
-        downloadIfMissing(zip, BASE_URL + "MUNICIPIOS.zip");
+    private Map<String, String> carregarMunicipios() throws IOException {
+        Map<String, String> map = new HashMap<>();
+        File zip = new File(dataDir, "Municipios.zip");
+        downloadIfMissing(zip, BASE_URL + "Municipios.zip");
         if (!zip.exists() || zip.length() == 0) return map;
-        File csv = null;
-        try (java.util.zip.ZipFile zf = new java.util.zip.ZipFile(zip)) {
-            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zf.entries();
-            while (en.hasMoreElements()) {
-                java.util.zip.ZipEntry entry = en.nextElement();
-                if (entry.getName().toUpperCase().contains("MUNICIPIO") && entry.getName().endsWith(".CSV")) {
-                    csv = new File(dataDir, "unzip/MUNICIPIOS.csv");
-                    try (java.io.InputStream is = zf.getInputStream(entry)) {
-                        Files.copy(is, csv.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    break;
-                }
-            }
-        }
+        File csv = extrairCsv(zip, "MUNICIPIO");
         if (csv == null) return map;
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(Files.newInputStream(csv.toPath()), StandardCharsets.ISO_8859_1))) {
@@ -127,7 +116,6 @@ public class EtlService {
             String linha;
             while ((linha = br.readLine()) != null) {
                 String[] f = linha.split(";", -1);
-                // Layout MUNICÍPIOS: codigo;nome;... (2 colunas principais)
                 if (f.length < 2) continue;
                 map.put(f[0].trim(), f[1].trim());
             }
@@ -135,17 +123,15 @@ public class EtlService {
         return map;
     }
 
-    private long importCsv(File csv, String uf, java.util.Map<String, String> munMap) throws IOException {
+    private long importCsv(File csv, String uf, Map<String, String> munMap) throws IOException {
         List<Estabelecimento> batch = new ArrayList<>(2000);
         long total = 0;
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(Files.newInputStream(csv.toPath()), StandardCharsets.ISO_8859_1))) {
-            String header = br.readLine(); // pula cabeçalho
+            br.readLine(); // header
             String linha;
             while ((linha = br.readLine()) != null) {
-                // Layout: CNPJ_BASICO;ORDem;DV;IDENT_MATRIZ_FILIAL;...
-                // Endereço aparece a partir do campo TIPO LOGRADOURO.
-                // Índices conforme NOVOLAYOUT (separador ';'):
+                // NOVOLAYOUT (separador ';'):
                 // 0 cnpj_basico,1 ordem,2 dv,3 matriz_filial,4 nome_fantasia,
                 // 5 situacao,6 data_situacao,7 motivo,8 cidade_exterior,9 pais,
                 // 10 inicio_ativ,11 cnae_principal,12 cnae_secundaria,
@@ -153,7 +139,7 @@ public class EtlService {
                 // 17 bairro,18 cep,19 uf,20 municipio, ...
                 String[] f = linha.split(";", -1);
                 if (f.length < 21) continue;
-                if (!f[19].equalsIgnoreCase(uf)) continue; // segurança
+                if (!f[19].equalsIgnoreCase(uf)) continue; // filtra pela UF
 
                 Estabelecimento e = new Estabelecimento();
                 e.setCnpj((f[0] + f[1] + f[2]).trim());
@@ -169,7 +155,6 @@ public class EtlService {
                 e.setNomeFantasia(f[4].trim());
                 e.setSituacaoCadastral(f[5].trim());
                 e.setCnaePrincipal(f[11].trim());
-                // razaoSocial vem do arquivo EMPRESA; fica nulo aqui (pode ser enriquecido depois)
                 batch.add(e);
 
                 if (batch.size() >= 2000) {

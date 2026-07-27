@@ -30,9 +30,10 @@ public class EtlService {
     private final EstabelecimentoRepository repository;
     private final String dataDir;
 
-    // Espelho com CDN (mais rápido). Mantém o oficial como fallback.
+    // Fonte oficial (link compartilhado Nextcloud da Receita Federal).
+    // Retorna 200 via GET com redirect. Prefixo obrigatório: /download/
     private static final String BASE_URL =
-        "https://arquivos.receitafederal.gov.br/CNPJ/dados_abertos_cnpj/";
+        "https://arquivos.receitafederal.gov.br/index.php/s/YggdBLfdninEJX9/download/";
 
     public EtlService(EstabelecimentoRepository repository,
                       @Value("${cnpj.data.dir:/data}") String dataDir) {

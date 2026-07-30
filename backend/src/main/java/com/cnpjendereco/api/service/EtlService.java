@@ -117,6 +117,7 @@ public class EtlService {
             String linha;
             while ((linha = br.readLine()) != null) {
                 String[] f = linha.split(";", -1);
+                for (int k = 0; k < f.length; k++) f[k] = f[k].trim().replace("\"", "");
                 if (f.length < 2) continue;
                 map.put(f[0].trim(), f[1].trim());
             }
@@ -139,6 +140,8 @@ public class EtlService {
                 // 13 tipo_log,14 logradouro,15 numero,16 complemento,
                 // 17 bairro,18 cep,19 uf,20 municipio, ...
                 String[] f = linha.split(";", -1);
+                // Campos do CSV da Receita vêm entre aspas duplas -> removemos
+                for (int k = 0; k < f.length; k++) f[k] = f[k].trim().replace("\"", "");
                 if (f.length < 21) continue;
                 if (!f[19].equalsIgnoreCase(uf)) continue; // filtra pela UF
 

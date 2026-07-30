@@ -5,7 +5,8 @@ WORKDIR /app
 COPY build.gradle ./
 RUN gradle dependencies --no-daemon || true
 COPY . .
-RUN gradle clean bootJar --no-daemon
+# Sem 'clean' (aproveita cache de compilacao) e com mais heap p/ nao travar na VPS
+RUN gradle bootJar --no-daemon -Dorg.gradle.jvmargs="-Xmx2g"
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app

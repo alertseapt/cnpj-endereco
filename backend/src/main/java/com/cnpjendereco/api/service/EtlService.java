@@ -7,6 +7,7 @@ import org.apache.commons.io.FileUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -62,6 +63,7 @@ public class EtlService {
 
     public record EtlResult(long importados, String arquivo, String erro) {}
 
+    @Transactional
     public EtlResult importarUf(String uf) {
         uf = uf.toUpperCase();
         try {

@@ -68,7 +68,7 @@ public class EtlService {
                 File zipFile = new File(dataDir, zipName);
                 downloadIfMissing(zipFile, BASE_URL + zipName);
                 if (!zipFile.exists() || zipFile.length() == 0) continue;
-                File csv = extrairCsv(zipFile, "ESTABELECIMENTO");
+                File csv = extrairCsv(zipFile, "ESTABELE");
                 if (csv == null) continue;
                 total += importCsv(csv, uf, munMap);
             }

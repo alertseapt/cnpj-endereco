@@ -57,10 +57,7 @@ public class EtlService {
     public EtlResult importarUf(String uf) {
         uf = uf.toUpperCase();
         try {
-            // 1) Tabela de MUNICÍPIOS (código IBGE -> nome)
             Map<String, String> munMap = carregarMunicipios();
-
-            // 2) Baixar e importar as 10 partes de estabelecimentos (filtra por UF)
             repository.deleteByUf(uf);
             long total = 0;
             for (int i = 0; i < NUM_PARTS; i++) {
@@ -68,14 +65,63 @@ public class EtlService {
                 File zipFile = new File(dataDir, zipName);
                 downloadIfMissing(zipFile, BASE_URL + zipName);
                 if (!zipFile.exists() || zipFile.length() == 0) continue;
-                File csv = extrairCsv(zipFile, "ESTABELE");
-                if (csv == null) continue;
-                total += importCsv(csv, uf, munMap);
+                total += processarParte(zipFile, uf, munMap);
             }
             return new EtlResult(total, "Estabelecimentos0-9.zip", null);
         } catch (Exception e) {
             return new EtlResult(0, "Estabelecimentos0-9.zip", e.getMessage());
         }
+    }
+
+    // Processa a parte direto do zip (sem extrair para disco): lê o entry
+    // ESTABELE via stream, filtra pela UF e importa em lotes.
+    private long processarParte(File zipFile, String uf, Map<String, String> munMap) throws IOException {
+        long total = 0;
+        try (ZipFile zf = new ZipFile(zipFile)) {
+            var en = zf.entries();
+            while (en.hasMoreElements()) {
+                ZipEntry entry = en.nextElement();
+                String name = entry.getName().toUpperCase();
+                if (!name.contains("ESTABELE") || entry.isDirectory()) continue;
+                List<Estabelecimento> batch = new ArrayList<>(2000);
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(zf.getInputStream(entry), StandardCharsets.ISO_8859_1))) {
+                    br.readLine(); // header
+                    String linha;
+                    while ((linha = br.readLine()) != null) {
+                        String[] f = linha.split(";", -1);
+                        for (int k = 0; k < f.length; k++) f[k] = f[k].trim().replace("\"", "");
+                        if (f.length < 21) continue;
+                        if (!f[19].equalsIgnoreCase(uf)) continue;
+                        Estabelecimento e = new Estabelecimento();
+                        e.setCnpj((f[0] + f[1] + f[2]).trim());
+                        e.setUf(f[19].trim().toUpperCase());
+                        e.setMunicipio(f[20].trim());
+                        e.setNomeMunicipio(munMap.getOrDefault(f[20].trim(), ""));
+                        e.setTipoLogradouro(f[13].trim());
+                        e.setLogradouro(f[14].trim());
+                        e.setNumero(f[15].trim().isEmpty() ? "S/N" : f[15].trim());
+                        e.setComplemento(f[16].trim());
+                        e.setBairro(f[17].trim());
+                        e.setCep(f[18].replaceAll("\\D", "").trim());
+                        e.setNomeFantasia(f[4].trim());
+                        e.setSituacaoCadastral(f[5].trim());
+                        e.setCnaePrincipal(f[11].trim());
+                        batch.add(e);
+                        if (batch.size() >= 2000) {
+                            repository.saveAll(batch);
+                            total += batch.size();
+                            batch.clear();
+                        }
+                    }
+                    if (!batch.isEmpty()) {
+                        repository.saveAll(batch);
+                        total += batch.size();
+                    }
+                }
+            }
+        }
+        return total;
     }
 
     private void downloadIfMissing(File target, String urlStr) throws IOException {
@@ -84,94 +130,30 @@ public class EtlService {
         FileUtils.copyURLToFile(url, target, 30000, 900000); // timeout 15min
     }
 
-    private File extrairCsv(File zipFile, String contains) throws IOException {
-        File outDir = new File(dataDir, "unzip");
-        try (ZipFile zf = new ZipFile(zipFile)) {
-            var en = zf.entries();
-            while (en.hasMoreElements()) {
-                ZipEntry entry = en.nextElement();
-                String name = entry.getName().toUpperCase();
-                // Novo layout: arquivo tipo "K3241.K03200Y0.D60711.ESTABELE" (sem extensao .CSV)
-                if (name.contains(contains) && !entry.isDirectory()) {
-                    File out = new File(outDir, entry.getName());
-                    try (java.io.InputStream is = zf.getInputStream(entry)) {
-                        Files.copy(is, out.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                    }
-                    return out;
-                }
-            }
-        }
-        return null;
-    }
-
     private Map<String, String> carregarMunicipios() throws IOException {
         Map<String, String> map = new HashMap<>();
         File zip = new File(dataDir, "Municipios.zip");
         downloadIfMissing(zip, BASE_URL + "Municipios.zip");
         if (!zip.exists() || zip.length() == 0) return map;
-        File csv = extrairCsv(zip, "MUNICIPIO");
-        if (csv == null) return map;
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(Files.newInputStream(csv.toPath()), StandardCharsets.ISO_8859_1))) {
-            br.readLine(); // header
-            String linha;
-            while ((linha = br.readLine()) != null) {
-                String[] f = linha.split(";", -1);
-                for (int k = 0; k < f.length; k++) f[k] = f[k].trim().replace("\"", "");
-                if (f.length < 2) continue;
-                map.put(f[0].trim(), f[1].trim());
+        try (ZipFile zf = new ZipFile(zip)) {
+            var en = zf.entries();
+            while (en.hasMoreElements()) {
+                ZipEntry entry = en.nextElement();
+                if (!entry.getName().toUpperCase().contains("MUNICIPIO") || entry.isDirectory()) continue;
+                try (BufferedReader br = new BufferedReader(
+                        new InputStreamReader(zf.getInputStream(entry), StandardCharsets.ISO_8859_1))) {
+                    br.readLine(); // header
+                    String linha;
+                    while ((linha = br.readLine()) != null) {
+                        String[] f = linha.split(";", -1);
+                        for (int k = 0; k < f.length; k++) f[k] = f[k].trim().replace("\"", "");
+                        if (f.length < 2) continue;
+                        map.put(f[0].trim(), f[1].trim());
+                    }
+                }
+                break;
             }
         }
         return map;
-    }
-
-    private long importCsv(File csv, String uf, Map<String, String> munMap) throws IOException {
-        List<Estabelecimento> batch = new ArrayList<>(2000);
-        long total = 0;
-        try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(Files.newInputStream(csv.toPath()), StandardCharsets.ISO_8859_1))) {
-            br.readLine(); // header
-            String linha;
-            while ((linha = br.readLine()) != null) {
-                // NOVOLAYOUT (separador ';'):
-                // 0 cnpj_basico,1 ordem,2 dv,3 matriz_filial,4 nome_fantasia,
-                // 5 situacao,6 data_situacao,7 motivo,8 cidade_exterior,9 pais,
-                // 10 inicio_ativ,11 cnae_principal,12 cnae_secundaria,
-                // 13 tipo_log,14 logradouro,15 numero,16 complemento,
-                // 17 bairro,18 cep,19 uf,20 municipio, ...
-                String[] f = linha.split(";", -1);
-                // Campos do CSV da Receita vêm entre aspas duplas -> removemos
-                for (int k = 0; k < f.length; k++) f[k] = f[k].trim().replace("\"", "");
-                if (f.length < 21) continue;
-                if (!f[19].equalsIgnoreCase(uf)) continue; // filtra pela UF
-
-                Estabelecimento e = new Estabelecimento();
-                e.setCnpj((f[0] + f[1] + f[2]).trim());
-                e.setUf(f[19].trim().toUpperCase());
-                e.setMunicipio(f[20].trim());
-                e.setNomeMunicipio(munMap.getOrDefault(f[20].trim(), ""));
-                e.setTipoLogradouro(f[13].trim());
-                e.setLogradouro(f[14].trim());
-                e.setNumero(f[15].trim().isEmpty() ? "S/N" : f[15].trim());
-                e.setComplemento(f[16].trim());
-                e.setBairro(f[17].trim());
-                e.setCep(f[18].replaceAll("\\D", "").trim());
-                e.setNomeFantasia(f[4].trim());
-                e.setSituacaoCadastral(f[5].trim());
-                e.setCnaePrincipal(f[11].trim());
-                batch.add(e);
-
-                if (batch.size() >= 2000) {
-                    repository.saveAll(batch);
-                    total += batch.size();
-                    batch.clear();
-                }
-            }
-            if (!batch.isEmpty()) {
-                repository.saveAll(batch);
-                total += batch.size();
-            }
-        }
-        return total;
     }
 }

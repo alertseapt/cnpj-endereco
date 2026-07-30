@@ -91,7 +91,8 @@ public class EtlService {
             while (en.hasMoreElements()) {
                 ZipEntry entry = en.nextElement();
                 String name = entry.getName().toUpperCase();
-                if (name.contains(contains) && name.endsWith(".CSV")) {
+                // Novo layout: arquivo tipo "K3241.K03200Y0.D60711.ESTABELE" (sem extensao .CSV)
+                if (name.contains(contains) && !entry.isDirectory()) {
                     File out = new File(outDir, entry.getName());
                     try (java.io.InputStream is = zf.getInputStream(entry)) {
                         Files.copy(is, out.toPath(), StandardCopyOption.REPLACE_EXISTING);

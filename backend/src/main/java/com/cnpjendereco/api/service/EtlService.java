@@ -44,7 +44,7 @@ public class EtlService {
     private static final int NUM_PARTS = 10;
 
     private static final String INSERT_SQL =
-        "INSERT INTO estabelecimentos (cnpj, uf, municipio, nome_municipio, bairro, " +
+        "INSERT IGNORE INTO estabelecimentos (cnpj, uf, municipio, nome_municipio, bairro, " +
         "tipo_logradouro, logradouro, numero, complemento, cep, nome_fantasia, " +
         "situacao_cadastral, cnae_principal) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
 

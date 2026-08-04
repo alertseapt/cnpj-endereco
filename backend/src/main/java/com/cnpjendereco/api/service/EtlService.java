@@ -63,7 +63,6 @@ public class EtlService {
 
     public record EtlResult(long importados, String arquivo, String erro) {}
 
-    @Transactional
     public EtlResult importarUf(String uf) {
         uf = uf.toUpperCase();
         try {
